@@ -394,31 +394,36 @@ def test_quantitative_impact_analysis():
 def test_custom_network_upload_and_simulation(tmp_path):
     """Verify custom .inp upload, catalog building, and simulation."""
     import io
+    from uuid import uuid4
     from backend.hydraulics import available_networks
     wn = wntr.network.WaterNetworkModel('Net1')
-    temp_inp = tmp_path / 'CustomNet1.inp'
+    upload_name = 'CustomNet1_' + uuid4().hex[:8]
+    json_name = 'CustomJsonNet_' + uuid4().hex[:8]
+    temp_inp = tmp_path / f'{upload_name}.inp'
     wntr.network.write_inpfile(wn, str(temp_inp))
     inp_bytes = temp_inp.read_bytes()
 
     with TestClient(app) as client:
-        res = client.post('/api/network/upload', files={'file': ('CustomNet1.inp', io.BytesIO(inp_bytes), 'text/plain')})
+        res = client.post('/api/network/upload', files={'file': (f'{upload_name}.inp', io.BytesIO(inp_bytes), 'text/plain')})
         assert res.status_code == 200
         data = res.json()
-        assert data['network_name'] == 'CustomNet1'
+        assert data['network_name'] == upload_name
         assert data['junctions_count'] == len(wn.junction_name_list)
         assert data['pipes_count'] == len(wn.pipe_name_list)
         assert 'baseline' in data
         assert 'topology' in data
-        assert 'CustomNet1' in data['networks']
+        assert upload_name in data['networks']
 
         # Ensure we can run simulation on this uploaded network
-        sim_res = client.get('/api/baseline/CustomNet1')
+        sim_res = client.get(f'/api/baseline/{upload_name}')
         assert sim_res.status_code == 200
 
         # Also test JSON upload format
         res_json = client.post('/api/network/upload', json={
-            'name': 'CustomJsonNet',
+            'name': json_name,
             'content': temp_inp.read_text()
         })
         assert res_json.status_code == 200
-        assert res_json.json()['network_name'] == 'CustomJsonNet'
+        assert res_json.json()['network_name'] == json_name
+        assert client.delete(f'/api/onboarding/network/{upload_name}').status_code == 200
+        assert client.delete(f'/api/onboarding/network/{json_name}').status_code == 200

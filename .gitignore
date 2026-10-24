@@ -11,6 +11,8 @@ __pycache__/
 # Local data and generated files
 *.sqlite3
 *.db
+/data/uploads/
+/data/investigations/
 .DS_Store
 
 # Frontend dependencies and build output

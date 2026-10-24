@@ -57,7 +57,7 @@ vm.runInContext(fs.readFileSync('frontend/app.js','utf8'),context);
   assert.equal(element('connectionBanner').hidden,true); // remains hidden when API works
   assert.ok(element('faultLocation').innerHTML.includes('Pipe P-11'));
   await cards[0].listeners.click();
-  assert.ok(element('setupSummary').innerHTML.includes('Synthetic pipe leak alert'));
+  assert.ok(element('setupSummary').innerHTML.includes('Simulated test readings'));
   assert.ok(element('readingRows').innerHTML.includes('Junction J-11'));
   assert.ok(element('pressureChart').innerHTML.includes('baseline-path'));
   assert.ok(element('pressureChart').innerHTML.includes('fault-path'));
@@ -69,7 +69,7 @@ vm.runInContext(fs.readFileSync('frontend/app.js','utf8'),context);
   assert.ok(element('pressureChart').innerHTML.includes('<svg'));
   element('inputKind').value='pressures';element('inputSensor').value='11';element('inputValue').value='36';
   element('addReading').listeners.click();
-  assert.ok(element('setupSummary').innerHTML.includes('Manual sensor alert'));
+  assert.ok(element('setupSummary').innerHTML.includes('Manual measurements'));
   assert.ok(element('readingRows').innerHTML.includes('36.00 m'));
   assert.equal(element('runButton').disabled,false);
   console.log('UI smoke: example, custom fault, and manual reading controls work');

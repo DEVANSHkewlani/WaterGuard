@@ -10,6 +10,9 @@ import networkx as nx
 
 DATA_DIR = Path(__file__).resolve().parents[1] / 'data'
 UPLOADS_DIR = DATA_DIR / 'uploads'
+LEAK_AREA_M2 = 0.00035
+CLOSURE_LOSS_FACTOR = 300
+SURGE_DEMAND_M3S = 0.012
 
 def available_networks() -> list[str]:
     nets = ['Net2', 'Net1']
@@ -62,17 +65,17 @@ def apply_fault(wn, h: Candidate):
         pipe = wn.get_link(h.location_id)
         wntr.morph.split_pipe(wn, h.location_id, '_leak_segment', '_leak_node', return_copy=False)
         node = wn.get_node('_leak_node')
-        node.add_leak(wn, area=0.00035 * h.severity, start_time=0)
+        node.add_leak(wn, area=LEAK_AREA_M2 * h.severity, start_time=0)
     elif h.fault_type == 'valve_closure':
         if h.location_id not in wn.pipe_name_list:
             raise ValueError('Closure location must be a pipe')
         pipe = wn.get_link(h.location_id)
-        pipe.minor_loss += 300 * h.severity / max(1.01 - h.severity, 0.01)
+        pipe.minor_loss += CLOSURE_LOSS_FACTOR * h.severity / max(1.01 - h.severity, 0.01)
     elif h.fault_type == 'demand_surge':
         if h.location_id not in wn.junction_name_list:
             raise ValueError('Surge location must be a junction')
         node = wn.get_node(h.location_id)
-        node.add_demand(base=0.012 * h.severity, pattern_name=None, category='surge')
+        node.add_demand(base=SURGE_DEMAND_M3S * h.severity, pattern_name=None, category='surge')
     else:
         raise ValueError('Unknown fault type')
 

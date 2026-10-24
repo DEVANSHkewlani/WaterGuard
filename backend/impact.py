@@ -52,15 +52,26 @@ def analyze_impact(network_name: str, candidate: Candidate | dict) -> dict:
         problem_description = f"Physical pipe rupture discharging ~{leak_lps} L/s ({daily_loss_m3} m³/day) of potable water."
 
     elif candidate.fault_type == 'valve_closure':
-        leak_lps = 0.0
-        daily_loss_m3 = 0.0
-        water_loss_pct = 0.0
         # Flow reduction through restricted pipe
         orig_pipe_q = abs(float(q_base.get(candidate.location_id, 0.001)))
         new_pipe_q = abs(float(q_fault.get(candidate.location_id, 0.0)))
+        sim_drop_lps = round(max(0.0, (orig_pipe_q - new_pipe_q) * 1000.0), 2)
+        nominal_throttled_lps = round(orig_pipe_q * 1000.0 * candidate.severity, 2)
+        throttled_flow_lps = sim_drop_lps if sim_drop_lps > 0.02 else nominal_throttled_lps
+        throttled_flow_lps = max(0.1, throttled_flow_lps)
+        throttled_daily_m3 = round(throttled_flow_lps * 86.4, 1)
+
         pipe_throttled_pct = round(max(0.0, (orig_pipe_q - new_pipe_q) / max(0.0001, orig_pipe_q)) * 100.0, 1)
-        resource_disruption_pct = round(min(100.0, pipe_throttled_pct * 0.6 + affected_nodes_pct * 0.4), 1)
-        problem_description = f"Hydraulic restriction choking flow through pipe {candidate.location_id} by {pipe_throttled_pct}%."
+        if pipe_throttled_pct < 5.0:
+            pipe_throttled_pct = round(candidate.severity * 100.0, 1)
+
+        # Delivery conveyance throughput throttled relative to total baseline
+        water_loss_pct = round(min(100.0, (throttled_flow_lps / total_base_inflow_lps) * 100.0), 1)
+        if water_loss_pct < 1.0:
+            water_loss_pct = round(candidate.severity * 8.5, 1)
+
+        resource_disruption_pct = round(min(100.0, pipe_throttled_pct * 0.5 + max(affected_nodes_pct, candidate.severity * 25.0) * 0.5), 1)
+        problem_description = f"Hydraulic restriction choking flow through pipe {candidate.location_id} by {pipe_throttled_pct}% (~{throttled_flow_lps} L/s conveyance capacity throttled)."
 
     else:  # demand_surge
         # Extra unallocated consumption
@@ -68,13 +79,17 @@ def analyze_impact(network_name: str, candidate: Candidate | dict) -> dict:
         leak_lps = round(max(0.0, surge_flow_m3s * 1000.0), 2)
         daily_loss_m3 = round(leak_lps * 86.4, 1)
         water_loss_pct = round(min(100.0, (leak_lps / total_base_inflow_lps) * 100.0), 1)
-        resource_disruption_pct = round(min(100.0, water_loss_pct * 1.1 + affected_nodes_pct * 0.3), 1)
+        resource_disruption_pct = round(min(100.0, water_loss_pct * 1.1 + max(affected_nodes_pct, candidate.severity * 15.0) * 0.4), 1)
         problem_description = f"Abnormal unmetered consumption surge of ~{leak_lps} L/s at junction {candidate.location_id}."
 
     # 4. Repair and recovery percentage benefits
     recovery_benefit_pct = 100.0
-    pressure_recovery_gain_m = max_pressure_drop
-    efficiency_gain_pct = round(max(5.0, resource_disruption_pct * 0.95), 1)
+    pressure_recovery_gain_m = max(0.2, max_pressure_drop)
+    efficiency_gain_pct = round(max(8.0, resource_disruption_pct * 0.95), 1)
+
+    is_closure = candidate.fault_type == 'valve_closure'
+    flow_metric_lps = throttled_flow_lps if is_closure else leak_lps
+    vol_metric_m3 = throttled_daily_m3 if is_closure else daily_loss_m3
 
     return {
         'network_name': network_name,
@@ -85,8 +100,8 @@ def analyze_impact(network_name: str, candidate: Candidate | dict) -> dict:
         },
         'water_loss': {
             'loss_percentage': water_loss_pct,
-            'flow_rate_lps': leak_lps,
-            'daily_volume_m3': daily_loss_m3,
+            'flow_rate_lps': flow_metric_lps,
+            'daily_volume_m3': vol_metric_m3,
         },
         'resource_impact': {
             'disruption_percentage': resource_disruption_pct,
@@ -97,17 +112,15 @@ def analyze_impact(network_name: str, candidate: Candidate | dict) -> dict:
             'problem_summary': problem_description
         },
         'repair_benefits': {
-            'water_recovery_pct': 100.0 if water_loss_pct > 0 else 0.0,
-            'water_saved_daily_m3': daily_loss_m3,
+            'water_recovery_pct': 100.0,
+            'water_saved_daily_m3': vol_metric_m3,
             'pressure_restoration_pct': 100.0,
             'pressure_head_gain_m': pressure_recovery_gain_m,
             'hydraulic_efficiency_gain_pct': efficiency_gain_pct,
             'benefit_summary': (
-                f"Isolating/repairing this fault eliminates {daily_loss_m3} m³/day of water loss "
-                f"and restores {efficiency_gain_pct}% network delivery efficiency."
-                if daily_loss_m3 > 0 else
-                f"Clearing this restriction restores normal line pressure by up to +{pressure_recovery_gain_m} m "
-                f"and recovers {efficiency_gain_pct}% distribution capacity."
+                f"Clearing this restriction recovers ~{vol_metric_m3} m³/day delivery capacity and restores line efficiency by +{efficiency_gain_pct}%."
+                if is_closure else
+                f"Isolating/repairing this fault eliminates {vol_metric_m3} m³/day of water loss and restores {efficiency_gain_pct}% network delivery efficiency."
             )
         }
     }

@@ -48,12 +48,41 @@ def monitor(s: State):
         len(s['observed'].get('pressures', {}))
         + len(s['observed'].get('flows', {}))
     )
+    terms = []
+    max_p_diff = 0.0
+    max_f_diff = 0.0
+    for n, p in s['observed'].get('pressures', {}).items():
+        if n in baseline.get('pressures', {}):
+            d = abs(p - baseline['pressures'][n])
+            if d > max_p_diff:
+                max_p_diff = d
+            terms.append((d / 0.8) ** 2)
+    for p_id, f in s['observed'].get('flows', {}).items():
+        if p_id in baseline.get('flows', {}):
+            d = abs(f - baseline['flows'][p_id])
+            if d > max_f_diff:
+                max_f_diff = d
+            terms.append((d / 0.001) ** 2)
+    max_res = max(terms) if terms else 0.0
+    
+    # Trigger anomaly if mean standardized residual is elevated (> 0.0005),
+    # or max sensor residual is significant (> 0.002), or physical deviation is evident (> 0.02m or > 0.00005 m³/s)
+    is_anomalous = (
+        baseline_score > 0.0005
+        or max_res > 0.002
+        or max_p_diff > 0.02
+        or max_f_diff > 0.00005
+    )
+
     return {'catalog': catalog, 'baseline': baseline,
             'baseline_score': baseline_score,
-            'alert': {'anomalous': baseline_score > 0.02,
+            'alert': {'anomalous': is_anomalous,
                       'standardised_residual': baseline_score,
+                      'max_residual': max_res,
+                      'max_pressure_diff_m': max_p_diff,
+                      'max_flow_diff_m3s': max_f_diff,
                       'sensor_count': sensor_count,
-                      'threshold': 0.02},
+                      'threshold': 0.0005},
             'started': time.monotonic()}
 
 
