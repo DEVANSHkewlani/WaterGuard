@@ -38,8 +38,11 @@ const context = vm.createContext({
   fetch: async (url,options) => {
     calls.push(url);
     let value;
-    if(url==='/api/network/Net1') value=topology;
-    else if(url==='/api/baseline/Net1') value={readings};
+    if(url==='/api/networks') value={networks:['Net2','Net1']};
+    else if(url==='/api/observability') value={status:'ready'};
+    else if(url==='/api/impact') value={candidate:{fault_type:'pipe_leak',location_id:'11'},water_loss:{loss_percentage:3.5,flow_rate_lps:5.8,daily_volume_m3:500},resource_impact:{disruption_percentage:4.2,affected_junctions_pct:0,max_pressure_drop_m:0.8,problem_summary:'Physical pipe rupture discharging water.'},repair_benefits:{hydraulic_efficiency_gain_pct:5,water_recovery_pct:100,water_saved_daily_m3:500,benefit_summary:'Repaired'}};
+    else if(url.startsWith('/api/network/')) value=topology;
+    else if(url.startsWith('/api/baseline/')) value={readings};
     else if(url==='/api/demo/custom') value={observed:readings,ground_truth:{fault_type:'pipe_leak',location_id:'11',severity:.55},series};
     else if(url.startsWith('/api/demo/')&&url.endsWith('/series')) value=series;
     else if(url.startsWith('/api/demo/')) value={observed:readings,ground_truth:{fault_type:'pipe_leak',location_id:'11',severity:.55}};

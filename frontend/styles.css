@@ -12,9 +12,7 @@
 
 /* Full network map and location-profile charts. */
 .map-wrap{min-height:0}
-.map-wrap svg{min-height:0;aspect-ratio:900/625}
-.map-pipe.changed:not(.leader):not(.runner) .pipe-line{stroke:#df9166;stroke-width:10}
-.edge-callout{pointer-events:none}
+.map-pipe.changed:not(.leader):not(.runner) .pipe-line{filter:drop-shadow(0 0 3px #e68740);stroke-dasharray:none}
 .edge-callout rect{fill:#fff;stroke:#cbdde2;stroke-width:1;opacity:.96}
 .edge-callout text{font-size:11px;font-weight:750;fill:#284b5a}
 .node-reading{font-size:11px;font-weight:750;fill:#385a68;pointer-events:none;paint-order:stroke;stroke:#eef7f8;stroke-width:4}
@@ -46,3 +44,323 @@
 .delta-zero{stroke:#8eabb3;stroke-width:1.5;stroke-dasharray:4 4}
 .delta-stem{stroke:#db815e;stroke-width:3}
 .delta-point{fill:#e97857;stroke:white;stroke-width:1.5}
+
+/* Zone legend and pipe coloring. */
+.network-dropdown {
+  background: #0d3848;
+  color: #7be3ce;
+  border: 1px solid #2e697a;
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+  outline: none;
+  transition: border-color .15s, box-shadow .15s;
+}
+
+.network-dropdown:focus {
+  border-color: #6edbcc;
+  box-shadow: 0 0 0 2px #18bb9944;
+}
+
+.zone-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.zone-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  background: white;
+  border: 1.5px solid #d0e0e5;
+  color: #1a3845;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  transition: all .15s ease;
+}
+
+.zone-chip[data-status="selected"] {
+  border-color: #0284c7;
+  background: #f0f9ff;
+  color: #0369a1;
+}
+
+.zone-chip[data-status="tested"] {
+  border-color: #059669;
+  background: #ecfdf5;
+  color: #047857;
+}
+
+.zone-chip[data-status="expanded"] {
+  border-color: #d97706;
+  background: #fffbeb;
+  color: #b45309;
+}
+
+.zone-chip i {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.1);
+}
+
+.map-pipe .pipe-line {
+  stroke: var(--zone-color, #87abb6);
+}
+
+.map-pipe.zone-selected .pipe-line {
+  stroke-width: 8;
+}
+
+.map-pipe.zone-tested .pipe-line {
+  stroke-width: 9;
+  filter: drop-shadow(0 0 3px #246f8b);
+}
+
+/* Fault-ranking colors still take priority over zone colors. */
+.map-pipe.leader .pipe-line {
+  stroke: #ff1744 !important;
+}
+
+.map-pipe.runner .pipe-line {
+  stroke: #f59e0b !important;
+}
+
+/* Custom Network Upload Button in Topbar */
+.network-selector-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.upload-network-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #123e4e;
+  border: 1px solid #366d80;
+  color: #79ddcc;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+.upload-network-btn:hover {
+  background: #195267;
+  color: #ffffff;
+  border-color: #55c7b3;
+  transform: translateY(-1px);
+}
+
+/* Zone Overlay & View Toggle */
+.map-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.view-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: #f1f7f9;
+  border: 1.5px solid #c8dce1;
+  color: #375362;
+  padding: 6px 13px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.view-toggle-btn:hover {
+  border-color: #0d838b;
+  color: #0b6066;
+}
+.view-toggle-btn.active {
+  background: #0d838b;
+  border-color: #0d838b;
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(13,131,139,0.25);
+}
+.view-toggle-btn.active .toggle-icon {
+  filter: drop-shadow(0 0 2px rgba(255,255,255,0.5));
+}
+
+/* Fault Highlighting Animations & Accents */
+@keyframes faultPipePulse {
+  0%, 100% {
+    stroke-width: 13px;
+    filter: drop-shadow(0 0 6px rgba(255, 23, 68, 0.9));
+  }
+  50% {
+    stroke-width: 18px;
+    filter: drop-shadow(0 0 16px rgba(255, 23, 68, 1));
+  }
+}
+
+@keyframes nodeRingPulse {
+  0% {
+    r: 16px;
+    opacity: 0.95;
+    stroke-width: 4px;
+  }
+  100% {
+    r: 38px;
+    opacity: 0;
+    stroke-width: 1px;
+  }
+}
+
+/* Pipe Highlighting */
+.map-pipe.fault-highlight .pipe-line {
+  stroke: #ff1744 !important;
+  animation: faultPipePulse 1.8s infinite ease-in-out;
+  stroke-linecap: round;
+  cursor: pointer;
+}
+
+.map-pipe.runner .pipe-line {
+  stroke: #f59e0b !important;
+  stroke-width: 10px !important;
+  stroke-linecap: round;
+}
+
+/* Node Highlighting */
+.map-node.fault-highlight .node-shape {
+  fill: #ffebee !important;
+  stroke: #d32f2f !important;
+  stroke-width: 5px !important;
+  filter: drop-shadow(0 0 10px rgba(255, 23, 68, 0.8));
+}
+
+.node-pulse-ring {
+  fill: none;
+  stroke: #ff1744;
+  animation: nodeRingPulse 1.8s infinite ease-out;
+  pointer-events: none;
+}
+
+/* Hazard Callout Badges */
+.edge-callout.fault-callout rect,
+.node-callout.fault-callout rect {
+  fill: #d32f2f !important;
+  stroke: #ffffff !important;
+  stroke-width: 1.5px;
+  filter: drop-shadow(0 2px 6px rgba(0,0,0,0.25));
+}
+.edge-callout.fault-callout text,
+.node-callout.fault-callout text {
+  fill: #ffffff !important;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+/* Quantitative Impact Card */
+.impact-card {
+  margin-bottom: 22px;
+  border-left: 5px solid #007f83;
+  background: linear-gradient(180deg, #ffffff, #f7fbfb);
+  padding: 24px;
+}
+.impact-badge {
+  font-size: 0.68rem;
+  letter-spacing: 0.12em;
+  font-weight: 800;
+  padding: 5px 11px;
+  border-radius: 999px;
+  background: #e0f2fe;
+  color: #0369a1;
+  border: 1px solid #bae6fd;
+}
+.impact-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin: 18px 0;
+}
+.impact-stat {
+  padding: 16px 18px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.impact-stat.water {
+  background: #f0f9ff;
+  border-color: #bae6fd;
+}
+.impact-stat.water .impact-value {
+  color: #0284c7;
+}
+.impact-stat.disruption {
+  background: #fff1f2;
+  border-color: #fecdd3;
+}
+.impact-stat.disruption .impact-value {
+  color: #e11d48;
+}
+.impact-stat.recovery {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+}
+.impact-stat.recovery .impact-value {
+  color: #16a34a;
+}
+.impact-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 800;
+  color: var(--muted);
+}
+.impact-value {
+  font-size: 1.85rem;
+  font-weight: 800;
+  line-height: 1.1;
+}
+.impact-sub {
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+.impact-summary-box {
+  background: #ffffff;
+  border: 1px solid #e1ebed;
+  border-radius: 12px;
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.impact-prob-text {
+  margin: 0;
+  color: #991b1b;
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+.impact-prob-text::before {
+  content: '⚠️ Problem: ';
+  font-weight: 800;
+}
+.impact-ben-text {
+  margin: 0;
+  color: #15803d;
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+.impact-ben-text::before {
+  content: '✅ Fix Benefit: ';
+  font-weight: 800;
+}
+

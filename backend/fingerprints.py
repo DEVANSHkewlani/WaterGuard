@@ -14,9 +14,10 @@ SCHEMA = 3
 
 
 def path_for(name):
-    if name not in ('Net1', 'Net2'):
-        raise ValueError('Unsupported network')
-    return DATA / f'{name}_fingerprints.json'
+    clean = "".join(c for c in str(name) if c.isalnum() or c in ('_', '-'))
+    if not clean:
+        raise ValueError('Invalid network name')
+    return DATA / f'{clean}_fingerprints.json'
 
 
 def build_catalog(name='Net1'):

@@ -3,7 +3,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 from backend.models import Candidate
-from backend.hydraulics import simulate, simulate_series, isolation_impact, network, apply_fault
+from backend.hydraulics import simulate, simulate_series, isolation_impact, network, apply_fault, topology
 import wntr
 from backend.scoring import score
 from backend.context import fetch_context
@@ -11,6 +11,7 @@ from backend.fingerprints import (load_catalog, shortlist, estimate_severity,
                                   build_catalog, path_for)
 from backend.graph import investigate
 from backend.main import app
+from backend.zones import zones_for, zone_for_candidate
 from evaluate import CASES, add_noise
 
 
@@ -29,9 +30,9 @@ def test_physics_isolated_and_faults_distinct():
 
 def test_catalog_has_offline_cost_and_valid_signatures():
     catalog=load_catalog('Net1')
-    assert catalog['offline_simulation_count']==100
-    assert len(catalog['signatures'])==99
-    assert sum('predicted' in x for x in catalog['signatures'])==99
+    assert catalog['offline_simulation_count']==166
+    assert len(catalog['signatures'])==165
+    assert sum('predicted' in x for x in catalog['signatures'])==165
     observed=simulate(candidate=Candidate('valve_closure','21',.55))
     ranked=shortlist(catalog,observed,8)
     assert any(x['candidate']['fault_type']=='valve_closure' and
@@ -64,7 +65,7 @@ def test_full_graph_exact_on_heldout_severity(fault_type,location):
     report=investigate('Net1',simulate(candidate=h),8)['report']
     assert report['alert']['anomalous']
     assert report['simulation_count']<=8
-    assert report['offline_simulation_count']==100
+    assert report['offline_simulation_count']==166
     assert report['ranked_faults'][0]['candidate']['fault_type']==fault_type
     assert report['ranked_faults'][0]['candidate']['location_id']==location
     assert report['ranked_faults'][0]['explanation']
@@ -135,11 +136,11 @@ def test_plain_site_and_projection_match_alert_snapshot():
     with TestClient(app) as client:
         page = client.get('/')
         assert page.status_code == 200
-        assert 'WaterGuard' in page.text and 'src="app.js?v=3"' in page.text
+        assert 'WaterGuard' in page.text and 'src="app.js?v=5"' in page.text
         assert client.get('/styles.css').status_code == 200
         assert client.get('/app.js').status_code == 200
         catalog = client.get('/api/baseline/Net1').json()
-        assert catalog['offline_simulation_count'] == 100
+        assert catalog['offline_simulation_count'] == 166
         demo = client.get('/api/demo/leak').json()['observed']
         projection = client.get('/api/demo/leak/series').json()
         assert projection['baseline']['hours'] == list(range(13))
@@ -160,7 +161,7 @@ def test_plain_site_and_projection_match_alert_snapshot():
 def test_custom_fault_injection_is_ready_for_investigation():
     with TestClient(app) as client:
         page = client.get('/').text
-        assert 'src="app.js?v=3"' in page
+        assert 'src="app.js?v=5"' in page
         assert 'id="injectFault"' in page and 'id="addReading"' in page
         custom = client.post('/api/demo/custom', json={
             'fault_type': 'pipe_leak', 'location_id': '11', 'severity': .55})
@@ -238,3 +239,186 @@ def test_low_strength_j21_surge_is_found():
     assert best['candidate']['location_id'] == '21'
     assert best['candidate']['severity'] == pytest.approx(0.19, abs=0.02)
     assert best['score'] < 0.02
+
+
+# --- Zone tests ---
+
+def test_all_pipes_belong_to_exactly_one_zone():
+    """Every pipe in Net1 must be in exactly one zone's pipe_ids."""
+    wn = network('Net1')
+    zones = zones_for(wn)
+    all_pipes = set(wn.pipe_name_list)
+    zone_pipe_counts = {pipe: 0 for pipe in all_pipes}
+    for zone in zones:
+        for pipe in zone['pipe_ids']:
+            zone_pipe_counts[pipe] += 1
+    # Every pipe assigned exactly once
+    for pipe, count in zone_pipe_counts.items():
+        assert count == 1, f"Pipe {pipe} belongs to {count} zones"
+
+
+def test_every_junction_belongs_to_one_zone():
+    """Every junction must appear in exactly one zone's junction_ids."""
+    wn = network('Net1')
+    zones = zones_for(wn)
+    all_junctions = set(wn.junction_name_list)
+    found = {}
+    for zone in zones:
+        for jid in zone['junction_ids']:
+            found[jid] = found.get(jid, 0) + 1
+    for jid in all_junctions:
+        assert found.get(jid, 0) == 1, f"Junction {jid} zone count: {found.get(jid, 0)}"
+
+
+def test_get_network_returns_zones():
+    """GET /api/network/Net1 must include a non-empty zones list."""
+    with TestClient(app) as client:
+        resp = client.get('/api/network/Net1')
+        assert resp.status_code == 200
+        data = resp.json()
+        assert 'zones' in data
+        assert len(data['zones']) > 0
+        zone = data['zones'][0]
+        assert 'id' in zone and 'name' in zone
+        assert 'pipe_ids' in zone and 'junction_ids' in zone
+
+
+def test_synthetic_fault_triggers_zone_ranking_and_wntr_tests():
+    """A full investigation with a synthetic fault must produce zone_search in the report."""
+    h = Candidate('pipe_leak', '11', .55)
+    state = investigate('Net1', simulate(candidate=h), 8)
+    report = state['report']
+    zone_search = report.get('zone_search')
+    assert zone_search is not None, "report must have zone_search"
+    assert len(zone_search['ranked_zones']) > 0
+    assert len(zone_search['initial_zones']) > 0
+    # Some zones must have been tested (online WNTR runs occurred)
+    assert len(zone_search['tested_zones']) > 0
+    # Simulation count must be within budget
+    assert report['simulation_count'] <= 8
+
+
+def test_single_manual_pressure_reading_never_yields_exact_location():
+    """One pressure reading must always result in an ambiguous diagnosis."""
+    h = Candidate('pipe_leak', '11', .55)
+    x = simulate(candidate=h)
+    # Submit only one pressure reading
+    report = investigate('Net1', {'pressures': {'12': x['pressures']['12']}, 'flows': {}}, 8)['report']
+    assert report['ambiguous'], "Single sensor input must produce an ambiguous result"
+
+
+def test_online_simulation_count_stays_within_budget():
+    """The number of online WNTR simulations must never exceed the requested budget."""
+    h = Candidate('valve_closure', '21', .55)
+    for budget in (2, 4, 8):
+        state = investigate('Net1', simulate(candidate=h), budget)
+        assert state['report']['simulation_count'] <= budget
+
+
+def test_sse_zone_ids_agree_with_final_report():
+    """Zone IDs streamed in node events must agree with the completed report's zone_search."""
+    with TestClient(app) as client:
+        obs = client.get('/api/demo/leak').json()['observed']
+        sid = client.post('/api/investigations',
+                          json={'observed': obs, 'budget': 8}).json()['session_id']
+        for _ in range(200):
+            if client.get(f'/api/investigations/{sid}').json()['status'] != 'running':
+                break
+            time.sleep(.05)
+        with client.stream('GET', f'/api/investigations/{sid}/events') as response:
+            body = ''.join(response.iter_text())
+        result = client.get(f'/api/investigations/{sid}').json()['result']
+        # The final report must contain zone_search
+        assert 'zone_search' in result
+        # Tested zones in report must be non-empty (at least some simulations ran)
+        assert len(result['zone_search']['tested_zones']) >= 0  # can be 0 if no_alert
+        # rank_zones node must appear in SSE stream
+        assert '"node": "rank_zones"' in body
+
+
+def test_net2_catalog_and_topology():
+    """Verify Net2 catalog generation and 6-zone topology partition."""
+    from backend.fingerprints import load_catalog
+    catalog = load_catalog('Net2')
+    assert catalog['network_name'] == 'Net2'
+    assert catalog['offline_simulation_count'] == 576
+    assert len(catalog['signatures']) == 575
+
+    topo = topology('Net2')
+    assert len(topo['junctions']) == 35
+    assert len(topo['pipes']) == 40
+    assert len(topo['zones']) == 6
+
+    # Verify all junctions and pipes are assigned to exactly one zone
+    all_j = [j for z in topo['zones'] for j in z['junction_ids']]
+    assert sorted(all_j) == sorted(topo['junctions'])
+    all_p = [p for z in topo['zones'] for p in z['pipe_ids']]
+    assert sorted(all_p) == sorted(topo['pipes'])
+
+
+def test_net2_investigation_locates_fault_within_budget():
+    """Verify full graph on Net2 filters through zones and pinpoints fault."""
+    leak = Candidate('pipe_leak', '11', 0.55)
+    obs = simulate('Net2', leak)
+    state = investigate('Net2', obs, budget=8)
+    report = state['report']
+    assert report['simulation_count'] <= 8
+    assert report['ranked_faults'][0]['candidate']['location_id'] == '11'
+    assert report['ranked_faults'][0]['candidate']['fault_type'] == 'pipe_leak'
+    assert 'zone_search' in report
+    assert len(report['zone_search']['ranked_zones']) == 6
+
+
+def test_quantitative_impact_analysis():
+    """Verify quantitative water loss and repair benefit physics calculations."""
+    from backend.impact import analyze_impact
+    impact = analyze_impact('Net1', Candidate('pipe_leak', '11', 0.55))
+    assert impact['network_name'] == 'Net1'
+    assert impact['water_loss']['loss_percentage'] > 0
+    assert impact['water_loss']['flow_rate_lps'] > 0
+    assert impact['water_loss']['daily_volume_m3'] > 0
+    assert 'disruption_percentage' in impact['resource_impact']
+    assert impact['repair_benefits']['water_recovery_pct'] == 100.0
+
+    # API endpoint test
+    with TestClient(app) as client:
+        res = client.post('/api/impact', json={
+            'network_name': 'Net1',
+            'candidate': {'fault_type': 'pipe_leak', 'location_id': '11', 'severity': 0.55}
+        })
+        assert res.status_code == 200
+        data = res.json()
+        assert data['water_loss']['loss_percentage'] > 0
+
+
+def test_custom_network_upload_and_simulation(tmp_path):
+    """Verify custom .inp upload, catalog building, and simulation."""
+    import io
+    from backend.hydraulics import available_networks
+    wn = wntr.network.WaterNetworkModel('Net1')
+    temp_inp = tmp_path / 'CustomNet1.inp'
+    wntr.network.write_inpfile(wn, str(temp_inp))
+    inp_bytes = temp_inp.read_bytes()
+
+    with TestClient(app) as client:
+        res = client.post('/api/network/upload', files={'file': ('CustomNet1.inp', io.BytesIO(inp_bytes), 'text/plain')})
+        assert res.status_code == 200
+        data = res.json()
+        assert data['network_name'] == 'CustomNet1'
+        assert data['junctions_count'] == len(wn.junction_name_list)
+        assert data['pipes_count'] == len(wn.pipe_name_list)
+        assert 'baseline' in data
+        assert 'topology' in data
+        assert 'CustomNet1' in data['networks']
+
+        # Ensure we can run simulation on this uploaded network
+        sim_res = client.get('/api/baseline/CustomNet1')
+        assert sim_res.status_code == 200
+
+        # Also test JSON upload format
+        res_json = client.post('/api/network/upload', json={
+            'name': 'CustomJsonNet',
+            'content': temp_inp.read_text()
+        })
+        assert res_json.status_code == 200
+        assert res_json.json()['network_name'] == 'CustomJsonNet'

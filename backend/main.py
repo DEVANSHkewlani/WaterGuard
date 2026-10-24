@@ -8,13 +8,15 @@ import os
 import time
 from pathlib import Path
 from functools import lru_cache
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Request as FastAPIRequest
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 from typing import Literal
-from .hydraulics import network, topology, simulate, simulate_series
+import re
+from .hydraulics import network as load_network, topology, simulate, simulate_series, available_networks
 from .models import Candidate
-from .fingerprints import load_catalog
+from .fingerprints import load_catalog, build_catalog
+from .impact import analyze_impact
 try:
     from dotenv import load_dotenv
     load_dotenv(Path(__file__).resolve().parents[1] / '.env', override=False)
@@ -32,6 +34,15 @@ from .graph import GRAPH
 from .observability import status as tracing_status, trace_workflow
 
 app = FastAPI(title='WaterGuard', version='1.0')
+
+@app.middleware("http")
+async def add_no_cache_headers(request, call_next):
+    response = await call_next(request)
+    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
+
 POOL = ThreadPoolExecutor(max_workers=2)
 SESSIONS = {}
 
@@ -50,6 +61,7 @@ class ComparisonRequest(BaseModel):
     candidate: dict
 
 class CustomFault(BaseModel):
+    network_name: str = 'Net1'
     fault_type: Literal['pipe_leak', 'valve_closure', 'demand_surge']
     location_id: str
     severity: float = Field(ge=0.05, le=1.0)
@@ -62,13 +74,85 @@ class Request(BaseModel):
 
 def validate(req: Request):
     try:
-        wn = network(req.network_name)
+        wn = load_network(req.network_name)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
     invalid = (set(req.observed.pressures) - set(wn.junction_name_list)) | (
         set(req.observed.flows) - set(wn.pipe_name_list))
     if invalid:
         raise HTTPException(422, f'Unknown sensor identifiers: {sorted(invalid)}')
+
+@app.get('/api/networks')
+def list_networks():
+    return {'networks': available_networks()}
+
+@app.post('/api/network/upload')
+async def upload_network(request: FastAPIRequest, file: UploadFile | None = File(None)):
+    clean_name = None
+    content = None
+
+    if file is not None and getattr(file, 'filename', None):
+        filename = file.filename
+        if not filename.lower().endswith('.inp'):
+            raise HTTPException(400, 'Only EPANET .inp files are accepted')
+        clean_name = re.sub(r'[^a-zA-Z0-9_\-]', '', Path(filename).stem)
+        content = await file.read()
+    else:
+        content_type = request.headers.get('content-type', '')
+        if 'multipart/form-data' in content_type:
+            form = await request.form()
+            upload = form.get('file')
+            if upload and hasattr(upload, 'filename'):
+                if not upload.filename.lower().endswith('.inp'):
+                    raise HTTPException(400, 'Only EPANET .inp files are accepted')
+                clean_name = re.sub(r'[^a-zA-Z0-9_\-]', '', Path(upload.filename).stem)
+                content = await upload.read()
+        elif 'application/json' in content_type:
+            body = await request.json()
+            raw_name = body.get('name') or Path(body.get('filename', 'custom.inp')).stem
+            clean_name = re.sub(r'[^a-zA-Z0-9_\-]', '', raw_name)
+            raw_content = body.get('content', '')
+            content = raw_content.encode('utf-8') if isinstance(raw_content, str) else raw_content
+        else:
+            raw_content = await request.body()
+            if raw_content:
+                clean_name = f'Custom_{int(time.time())}'
+                content = raw_content
+
+    if not clean_name:
+        clean_name = f'Custom_{int(time.time())}'
+    if not content:
+        raise HTTPException(400, 'Empty file or content received')
+
+    uploads_dir = Path(__file__).resolve().parents[1] / 'data' / 'uploads'
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = uploads_dir / f'{clean_name}.inp'
+    dest_path.write_bytes(content)
+
+    try:
+        wn = load_network(clean_name)
+        cat = build_catalog(clean_name)
+        topo = topology(clean_name)
+        return {
+            'network_name': clean_name,
+            'junctions_count': len(wn.junction_name_list),
+            'pipes_count': len(wn.pipe_name_list),
+            'zones_count': len(topo.get('zones', [])),
+            'topology': topo,
+            'baseline': cat['baseline'],
+            'networks': available_networks()
+        }
+    except Exception as exc:
+        if dest_path.exists():
+            dest_path.unlink()
+        raise HTTPException(422, f'Failed to process .inp network: {exc}') from exc
+
+@app.post('/api/impact')
+def compute_impact(req: ComparisonRequest):
+    try:
+        return analyze_impact(req.network_name, req.candidate)
+    except Exception as exc:
+        raise HTTPException(422, f'Quantitative impact calculation failed: {exc}') from exc
 
 @app.get('/api/network/{name}')
 def get_network(name: str):
@@ -95,20 +179,39 @@ def series_baseline(name: str):
     return simulate_series(name)
 
 @app.get('/api/demo/{kind}/series')
-def demo_series(kind: str):
-    samples = {'leak': Candidate('pipe_leak', '11', .55),
-               'valve': Candidate('valve_closure', '21', .55),
-               'surge': Candidate('demand_surge', '12', .55)}
+def demo_series(kind: str, network_name: str = 'Net1', network: str | None = None):
+    net = network or network_name
+    try:
+        wn = load_network(net)
+    except Exception as e:
+        raise HTTPException(404, str(e)) from e
+    if net == 'Net1':
+        samples = {'leak': Candidate('pipe_leak', '11', .55),
+                   'valve': Candidate('valve_closure', '21', .55),
+                   'surge': Candidate('demand_surge', '12', .55)}
+    elif net == 'Net2':
+        samples = {'leak': Candidate('pipe_leak', '11', .55),
+                   'valve': Candidate('valve_closure', '7', .55),
+                   'surge': Candidate('demand_surge', '12', .55)}
+    else:
+        p_ids = wn.pipe_name_list
+        j_ids = wn.junction_name_list
+        p1 = p_ids[0] if p_ids else '1'
+        p2 = p_ids[1] if len(p_ids) > 1 else p1
+        j1 = j_ids[0] if j_ids else '1'
+        samples = {'leak': Candidate('pipe_leak', p1, .55),
+                   'valve': Candidate('valve_closure', p2, .55),
+                   'surge': Candidate('demand_surge', j1, .55)}
     if kind not in samples:
         raise HTTPException(404, 'Unknown demo kind')
-    return {'baseline': series_baseline('Net1'),
-            'fault': simulate_series('Net1', samples[kind]),
+    return {'baseline': series_baseline(net),
+            'fault': simulate_series(net, samples[kind]),
             'note': 'Two independent model projections. Fault is active from hour 0; diagnosis scores hour 0.'}
 
 @app.post('/api/compare-series')
 def compare_series(req: ComparisonRequest):
     try:
-        wn = network(req.network_name)
+        wn = load_network(req.network_name)
         h = Candidate(**req.candidate)
         if not 0 < h.severity <= 1:
             raise ValueError('Severity must be between 0 and 1')
@@ -123,38 +226,55 @@ def compare_series(req: ComparisonRequest):
         raise HTTPException(422, str(e)) from e
 
 @app.get('/api/demo/{kind}')
-def demo(kind: str):
-    # Ground truth is deliberately kept separate from investigation response.
-    samples = {'leak': Candidate('pipe_leak', '11', 0.55),
-               'valve': Candidate('valve_closure', '21', 0.55),
-               'surge': Candidate('demand_surge', '12', 0.55)}
+def demo(kind: str, network_name: str = 'Net1', network: str | None = None):
+    net = network or network_name
+    try:
+        wn = load_network(net)
+    except Exception as e:
+        raise HTTPException(404, str(e)) from e
+    if net == 'Net1':
+        samples = {'leak': Candidate('pipe_leak', '11', 0.55),
+                   'valve': Candidate('valve_closure', '21', 0.55),
+                   'surge': Candidate('demand_surge', '12', 0.55)}
+    elif net == 'Net2':
+        samples = {'leak': Candidate('pipe_leak', '11', 0.55),
+                   'valve': Candidate('valve_closure', '7', 0.55),
+                   'surge': Candidate('demand_surge', '12', 0.55)}
+    else:
+        p_ids = wn.pipe_name_list
+        j_ids = wn.junction_name_list
+        p1 = p_ids[0] if p_ids else '1'
+        p2 = p_ids[1] if len(p_ids) > 1 else p1
+        j1 = j_ids[0] if j_ids else '1'
+        samples = {'leak': Candidate('pipe_leak', p1, 0.55),
+                   'valve': Candidate('valve_closure', p2, 0.55),
+                   'surge': Candidate('demand_surge', j1, 0.55)}
     if kind not in samples:
         raise HTTPException(404, 'Unknown demo kind')
     try:
-        obs = simulate('Net1', samples[kind])
+        obs = simulate(net, samples[kind])
     except Exception as e:
         raise HTTPException(500, f'Demo simulation failed: {e}') from e
-    # Fixed sensor set allows a reproducible comparison, no hardcoded values.
     nodes = list(obs['pressures'])
     pipes = list(obs['flows'])
-    return {'network_name': 'Net1', 'observed': {'pressures': {n: obs['pressures'][n] for n in nodes},
-                                                  'flows': {p: obs['flows'][p] for p in pipes}},
+    return {'network_name': net, 'observed': {'pressures': {n: obs['pressures'][n] for n in nodes},
+                                              'flows': {p: obs['flows'][p] for p in pipes}},
             'ground_truth': vars(samples[kind])}
 
 @app.post('/api/demo/custom')
 def custom_demo(req: CustomFault):
-    wn = network('Net1')
+    wn = load_network(req.network_name)
     allowed = wn.junction_name_list if req.fault_type == 'demand_surge' else wn.pipe_name_list
     if req.location_id not in allowed:
         raise HTTPException(422, 'Select a valid junction for demand or a valid pipe for leak/restriction')
     candidate = Candidate(req.fault_type, req.location_id, req.severity)
     try:
-        observed = simulate('Net1', candidate)
-        series = {'baseline': series_baseline('Net1'), 'fault': simulate_series('Net1', candidate),
+        observed = simulate(req.network_name, candidate)
+        series = {'baseline': series_baseline(req.network_name), 'fault': simulate_series(req.network_name, candidate),
                   'note': 'Independent healthy and fault projections; diagnosis scores hour 0.'}
     except Exception as e:
         raise HTTPException(422, f'Could not simulate selected fault: {e}') from e
-    return {'network_name': 'Net1', 'observed': observed,
+    return {'network_name': req.network_name, 'observed': observed,
             'ground_truth': vars(candidate), 'series': series}
 
 @app.post('/api/investigate')
@@ -191,6 +311,10 @@ async def create_session(req: Request):
                         event['latest'] = delta['events'][-1]['tested']
                     if node == 'monitor':
                         event['anomaly'] = delta['alert']
+                    elif node == 'rank_zones':
+                        event['zone_rankings'] = delta.get('zone_rankings', [])
+                    elif node == 'expand':
+                        event['expanded_zone_ids'] = delta.get('expanded_zone_ids', [])
                     elif node == 'context':
                         event['sources'] = {k: len(v) for k, v in delta['context'].items()}
                     elif node == 'hypotheses':

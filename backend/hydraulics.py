@@ -1,13 +1,43 @@
 """Network topology, hydraulic fault injection and independent WNTR runs."""
 from __future__ import annotations
+from .zones import zones_for
 import math
 import wntr
 from .models import Candidate, SEVERITIES
 
+from pathlib import Path
+import networkx as nx
+
+DATA_DIR = Path(__file__).resolve().parents[1] / 'data'
+UPLOADS_DIR = DATA_DIR / 'uploads'
+
+def available_networks() -> list[str]:
+    nets = ['Net2', 'Net1']
+    if UPLOADS_DIR.exists():
+        for f in sorted(UPLOADS_DIR.glob('*.inp')):
+            if f.stem not in nets:
+                nets.append(f.stem)
+    return nets
+
 def network(name='Net1'):
-    if name not in ('Net1', 'Net2'):
-        raise ValueError('Supported networks: Net1, Net2')
-    wn = wntr.network.WaterNetworkModel(name)
+    if name in ('Net1', 'Net2'):
+        wn = wntr.network.WaterNetworkModel(name)
+    else:
+        inp_file = UPLOADS_DIR / f'{name}.inp'
+        if not inp_file.exists():
+            inp_file = DATA_DIR / f'{name}.inp'
+        if not inp_file.exists():
+            raise ValueError(f'Unsupported network: {name}. Upload {name}.inp first.')
+        wn = wntr.network.WaterNetworkModel(str(inp_file))
+
+    # Auto-generate coordinates if missing in custom network
+    coords = [node.coordinates for _, node in wn.nodes()]
+    if not coords or all(c == (0.0, 0.0) or not c for c in coords):
+        G = wn.to_graph()
+        pos = nx.spring_layout(G, seed=42)
+        for n_id, p in pos.items():
+            wn.get_node(n_id).coordinates = (float(p[0]) * 100.0, float(p[1]) * 100.0)
+
     wn.options.time.duration = 0  # one hydraulic snapshot; never average over a day
     return wn
 
@@ -22,7 +52,7 @@ def topology(name='Net1'):
                        'target': link.end_node_name, 'kind': link.link_type}}
              for link_id, link in wn.links()]
     return {'nodes': nodes, 'edges': edges, 'junctions': list(wn.junction_name_list),
-            'pipes': list(wn.pipe_name_list)}
+            'pipes': list(wn.pipe_name_list), 'zones': zones_for(wn)}
 
 
 def apply_fault(wn, h: Candidate):

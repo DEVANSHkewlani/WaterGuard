@@ -5,14 +5,24 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#071e2c">
   <title>WaterGuard | Understand a network alert</title>
-  <link rel="stylesheet" href="styles.css?v=3">
-  <script defer src="app.js?v=3"></script>
+  <link rel="stylesheet" href="styles.css?v=5">
+  <script defer src="app.js?v=5"></script>
 </head>
 <body>
   <header class="topbar">
     <a class="brand" href="#overview"><span class="brand-mark">W</span><span>WaterGuard<small>Hydraulic investigation lab</small></span></a>
     <nav aria-label="Page sections"><a href="#overview">Overview</a><a href="#network">Network</a><a href="#investigation">Investigation</a><a href="#architecture">How it works</a></nav>
-    <span class="model-badge">SYNTHETIC NET1 · LOCAL MODEL</span>
+    <div class="network-selector-wrap">
+      <select id="networkSelect" class="network-dropdown" aria-label="Select Network Model">
+        <option value="Net2" selected>Net2 (35 Junc · 40 Pipes · 6 Zones)</option>
+        <option value="Net1">Net1 (9 Junc · 12 Pipes · 3 Zones)</option>
+      </select>
+      <label class="upload-network-btn" title="Upload EPANET .inp network">
+        <input type="file" id="inpUploadInput" accept=".inp" style="display:none">
+        <span>📤 Upload .inp</span>
+      </label>
+    </div>
+    <span class="model-badge" id="modelBadge">SYNTHETIC NET2 · 6 ZONES · LOCAL MODEL</span>
   </header>
   <div id="connectionBanner" class="connection-banner" role="alert" hidden><strong>WaterGuard server is not connected.</strong><span>Extract the ZIP, run <code>start.command</code> on macOS or follow the Python setup in GUIDE.md, then visit <code>http://127.0.0.1:8000/</code>. Opening index.html directly cannot run hydraulic simulations.</span></div>
   <main>
@@ -30,35 +40,75 @@
         <button type="button" class="scenario-card" data-demo="surge"><span class="scenario-icon surge-icon">≋</span><strong>Demand surge</strong><span>Extra water is consumed at a junction. This may resemble a nearby leak.</span><small>Load synthetic alert →</small></button>
       </div>
       <div class="setup-summary card" id="setupSummary"><div class="status-dot"></div><div><strong>No readings loaded yet</strong><p>Choose an example or add a manual measurement below.</p></div></div>
-      <div class="custom-fault card"><div><p class="eyebrow">YOUR OWN FAULT</p><h3>Inject a custom synthetic fault</h3><p>Choose a cause, its Net1 location, and its strength. WaterGuard will simulate the resulting sensor alert, then you can investigate it without passing the hidden cause to the investigator.</p></div><div class="manual-grid"><label>Fault type<select id="faultType"><option value="pipe_leak">Pipe leak</option><option value="valve_closure">Pipe restriction</option><option value="demand_surge">Demand surge</option></select></label><label>Fault location<select id="faultLocation"></select></label><label>Strength (0.05–1.00)<input id="faultSeverity" type="number" min="0.05" max="1" step="0.05" value="0.55"></label><button type="button" id="injectFault" class="button primary">Inject fault</button></div></div>
+      <div class="custom-fault card"><div><p class="eyebrow">YOUR OWN FAULT</p><h3>Inject a custom synthetic fault</h3><p>Choose a cause, its location in the active network, and its strength. WaterGuard will simulate the resulting sensor alert, then you can investigate it without passing the hidden cause to the investigator.</p></div><div class="manual-grid"><label>Fault type<select id="faultType"><option value="pipe_leak">Pipe leak</option><option value="valve_closure">Pipe restriction</option><option value="demand_surge">Demand surge</option></select></label><label>Fault location<select id="faultLocation"></select></label><label>Strength (0.05–1.00)<input id="faultSeverity" type="number" min="0.05" max="1" step="0.05" value="0.55"></label><button type="button" id="injectFault" class="button primary">Inject fault</button></div></div>
       <details class="manual card" open><summary>Or enter actual sensor readings <span>Pressure in m · flow entered in L/s</span></summary><div class="manual-grid"><label>Measurement type<select id="inputKind"><option value="pressures">Junction pressure (m)</option><option value="flows">Pipe flow (L/s)</option></select></label><label>Sensor location<select id="inputSensor"></select></label><label>Measured value<input id="inputValue" type="number" step="any" placeholder="Enter a reading"></label><button type="button" id="addReading" class="button primary">Add reading</button></div><p class="input-hint" id="baselineHint">Select a sensor to see its healthy baseline. A negative flow means water moves opposite the pipe's reference direction.</p></details>
     </section>
 
     <section id="network" class="section"><div class="section-heading"><div><p class="eyebrow">STEP 02 · INSPECT THE PHYSICAL MODEL</p><h2>The network and its readings</h2><p>Circles are consumption junctions; the diamond is a tank, and the square is a reservoir. Lines are pipes, except the supply pump. Every measured junction and pipe shows its alert reading on the map. Click any element to compare healthy and observed values.</p></div><span class="section-index">02 / 04</span></div>
-      <div class="network-grid"><div class="card map-card"><div class="card-heading"><h3>Net1 distribution network</h3><span>9 junctions · 12 pipes · 1 pump</span></div><div class="map-wrap" id="networkMap" role="img" aria-label="Interactive network diagram"></div><div class="legend"><span><i class="legend-dot normal"></i> Junction</span><span><i class="legend-line changed"></i> Leading fault location</span><span><i class="legend-line runner"></i> Other ranked location</span><span><i class="legend-dot changed"></i> Changed junction pressure</span><span><i class="legend-line changed"></i> Changed pipe flow</span></div><p class="map-note">Labels such as J-12 and P-11 are Net1 IDs, not street addresses. Numbers beside elements are observed pressures (m) or pipe flows (L/s); blank values mean no measurement. Red and amber mark ranked hypotheses only after investigation.</p></div>
+      <div class="network-grid"><div class="card map-card"><div class="card-heading"><div><h3 id="networkHeading">Net2 distribution network</h3><span id="networkSubheading">35 junctions · 40 pipes · 1 tank · 6 zones</span></div><div class="map-toolbar"><button type="button" id="toggleZoneOverlay" class="view-toggle-btn active" title="Toggle zone colors overlay"><span class="toggle-icon">🗺️</span><span id="zoneToggleText">Zone Overlay: ON</span></button></div></div><div id="zoneLegend" class="zone-legend" aria-label="Network zones"></div>
+<p id="zoneStatus" class="map-note">
+  Zones follow the network connections. Run an investigation to see
+  which zones are searched.
+</p><div class="map-wrap" id="networkMap" role="img" aria-label="Interactive network diagram"></div><div class="legend"><span><i class="legend-dot normal"></i> Junction</span><span><i class="legend-line changed"></i> Leading fault location</span><span><i class="legend-line runner"></i> Other ranked location</span><span><i class="legend-dot changed"></i> Changed junction pressure</span><span><i class="legend-line changed"></i> Changed pipe flow</span></div><p class="map-note">Labels such as J-12 and P-11 are sensor IDs, not street addresses. Numbers beside elements are observed pressures (m) or pipe flows (L/s); blank values mean no measurement. Red and amber mark ranked hypotheses only after investigation.</p></div>
       <div class="card inspector" id="networkInspector"><p class="eyebrow">NETWORK INSPECTOR</p><h3>Select a pipe or junction</h3><p>Its healthy model value, observed value, and role will appear here.</p></div></div>
       <div class="card readings-card"><div class="card-heading"><div><h3>Sensor comparison at the alert time</h3><p>These are the values used by the diagnosis. A larger change does not alone prove the fault is at that sensor.</p></div><button class="text-button" id="clearReadings" type="button">Clear readings</button></div><div class="table-scroll"><table><thead><tr><th>Sensor</th><th>Healthy baseline</th><th>Observed</th><th>Change</th><th>Meaning</th><th></th></tr></thead><tbody id="readingRows"><tr><td colspan="6" class="empty">Load a scenario to compare readings.</td></tr></tbody></table></div></div>
     </section>
 
-    <section id="signals" class="section"><div class="section-heading"><div><p class="eyebrow">WHOLE NETWORK · ALERT SNAPSHOT</p><h2>Healthy versus observed, at every sensor</h2><p>Each x-axis label is a Net1 sensor ID. Blue is the healthy WNTR baseline; orange is the fault-injected or manually supplied reading at the same time. The backend uses this snapshot for diagnosis. If you enter only a few readings, missing values stay blank rather than being invented.</p></div></div>
-      <div class="card chart-card network-profile"><div class="card-heading"><div><h3>All junction pressures</h3><p>J-10 through J-32 · metres of water head</p></div></div><div id="pressureChart" class="chart" role="img" aria-label="Pressure at all junctions"></div><p id="pressureChartNote" class="chart-note"></p><h4>Change from healthy pressure (m)</h4><div id="pressureDelta" class="delta-chart" role="img" aria-label="Pressure changes by junction"></div></div>
-      <div class="card chart-card network-profile"><div class="card-heading"><div><h3>All pipe flows</h3><p>P-10 through P-122 · litres per second; signed by pipe direction</p></div></div><div id="flowChart" class="chart" role="img" aria-label="Flow in all pipes"></div><p id="flowChartNote" class="chart-note"></p><h4>Change from healthy flow (L/s)</h4><div id="flowDelta" class="delta-chart" role="img" aria-label="Flow changes by pipe"></div></div>
+    <section id="signals" class="section"><div class="section-heading"><div><p class="eyebrow">WHOLE NETWORK · ALERT SNAPSHOT</p><h2>Healthy versus observed, at every sensor</h2><p>Each x-axis label is a network sensor ID. Blue is the healthy WNTR baseline; orange is the fault-injected or manually supplied reading at the same time. The backend uses this snapshot for diagnosis. If you enter only a few readings, missing values stay blank rather than being invented.</p></div></div>
+      <div class="card chart-card network-profile"><div class="card-heading"><div><h3 id="pressureChartTitle">All junction pressures</h3><p id="pressureChartSubtitle">Metres of water head</p></div></div><div id="pressureChart" class="chart" role="img" aria-label="Pressure at all junctions"></div><p id="pressureChartNote" class="chart-note"></p><h4>Change from healthy pressure (m)</h4><div id="pressureDelta" class="delta-chart" role="img" aria-label="Pressure changes by junction"></div></div>
+      <div class="card chart-card network-profile"><div class="card-heading"><div><h3 id="flowChartTitle">All pipe flows</h3><p id="flowChartSubtitle">Litres per second; signed by pipe direction</p></div></div><div id="flowChart" class="chart" role="img" aria-label="Flow in all pipes"></div><p id="flowChartNote" class="chart-note"></p><h4>Change from healthy flow (L/s)</h4><div id="flowDelta" class="delta-chart" role="img" aria-label="Flow changes by pipe"></div></div>
       <div class="chart-key"><span><i class="swatch baseline"></i> Healthy model</span><span><i class="swatch observed"></i> Observed after fault</span><span class="muted">Lines connect locations, not times. The change charts use their own vertical scale so small differences remain visible.</span></div>
     </section>
 
-    <section id="investigation" class="section"><div class="section-heading"><div><p class="eyebrow">STEP 03 · RUN THE INVESTIGATOR</p><h2>From readings to a testable explanation</h2><p>First compare 99 stored signatures without new simulation. Then estimate fault strength and verify the best locations with up to eight fresh WNTR runs.</p></div><span class="section-index">03 / 04</span></div>
+    <section id="investigation" class="section"><div class="section-heading"><div><p class="eyebrow">STEP 03 · RUN THE INVESTIGATOR</p><h2>From readings to a testable explanation</h2><p>
+  Compare stored fault signatures, rank connected zones, then verify
+  selected locations using fresh WNTR simulations.
+</p></div><span class="section-index">03 / 04</span></div>
       <div class="run-bar card"><div><strong id="runTitle">Ready when you are</strong><p id="runSubtitle">Load sensor values to enable the investigation.</p></div><button type="button" id="runButton" class="button primary" disabled>Investigate readings <span aria-hidden="true">→</span></button></div>
+
+      <!-- Quantitative Impact & Repair Benefit Card -->
+      <div class="card impact-card" id="impactCard" style="display:none;">
+        <div class="card-heading">
+          <div>
+            <p class="eyebrow">PHYSICS IMPACT & REMEDIATION BENEFIT</p>
+            <h3 id="impactHeading">Quantitative Fault & Resource Analysis</h3>
+          </div>
+          <span id="impactBadge" class="impact-badge">WNTR SIMULATION</span>
+        </div>
+        <div class="impact-grid">
+          <div class="impact-stat water">
+            <span class="impact-label">Water Loss / Escape</span>
+            <div class="impact-value" id="impactWaterLossPct">0.0%</div>
+            <div class="impact-sub" id="impactWaterLossSub">0.0 L/s · 0.0 m³/day</div>
+          </div>
+          <div class="impact-stat disruption">
+            <span class="impact-label">Resource Disruption</span>
+            <div class="impact-value" id="impactDisruptionPct">0.0%</div>
+            <div class="impact-sub" id="impactDisruptionSub">0% junctions affected</div>
+          </div>
+          <div class="impact-stat recovery">
+            <span class="impact-label">Projected Fix Benefit</span>
+            <div class="impact-value" id="impactBenefitPct">100%</div>
+            <div class="impact-sub" id="impactBenefitSub">+0% efficiency restored</div>
+          </div>
+        </div>
+        <div class="impact-summary-box">
+          <p id="impactProblemSummary" class="impact-prob-text"></p>
+          <p id="impactBenefitSummary" class="impact-ben-text"></p>
+        </div>
+      </div>
+
       <div class="card telemetry-card"><h3>Trace and logging status</h3><div id="telemetryStatus">The local investigation timeline is available. Checking optional external tracing…</div><p>Expand each timeline step for the recorded JSON. LangSmith and AgentOps require your own keys; configured status does not guarantee remote delivery.</p></div>
       <div class="investigation-grid"><div class="card trace-card"><div class="card-heading"><div><h3>Investigation timeline</h3><p>Recorded steps and their actual elapsed times. Fast local simulations can finish in under a second.</p></div><span id="traceState" class="mini-status">Not started</span></div><ol id="traceList" class="trace-list"><li class="empty">The reasoning steps will appear here after you run an investigation.</li></ol></div><div class="card result-card" id="resultCard"><p class="eyebrow">DIAGNOSIS</p><h3>No investigation yet</h3><p>Results will show the best tested causes, measured evidence, ambiguity, and operator recommendations.</p></div></div>
     </section>
 
     <section class="section" id="architecture"><div class="section-heading"><div><p class="eyebrow">STEP 04 · UNDERSTAND THE SYSTEM</p><h2>How the pieces connect</h2><p>The same backend serves this plain HTML, CSS, and JavaScript page and the investigation API. The optional language model only paraphrases a numeric explanation; WNTR provides hydraulic values.</p></div><span class="section-index">04 / 04</span></div>
       <div class="architecture-flow"><div><b>Browser</b><span>Load a scenario, inspect network and charts, send observed readings.</span><small>index.html · app.js · styles.css</small></div><div><b>FastAPI</b><span>Validate IDs and units, run sessions, publish detailed progress.</span><small>backend/main.py</small></div><div><b>LangGraph</b><span>Monitor → context → shortlist → verify → assess → report.</span><small>backend/graph.py</small></div><div><b>WNTR</b><span>Simulate the healthy network, faults, and isolation what-ifs.</span><small>backend/hydraulics.py</small></div></div>
-      <div class="learning-grid"><article class="card"><h3>Why keep a catalog?</h3><p>The 99 stored signatures cover Net1 fault types, locations, and three severities. Building them costs 100 offline runs including baseline. The live search uses them to avoid blindly simulating every pipe. It still verifies shortlisted strengths with new runs.</p></article><article class="card"><h3>What does a low mismatch mean?</h3><p>The simulated readings are close to the observed values after pressure and flow have been put on comparable scales. It does not prove the fault. Another cause may fit nearly as well, and unmodelled causes remain possible.</p></article><article class="card"><h3>What does the agent decide?</h3><p>The graph controls the investigation stages, chooses a shortlist, estimates severity, uses a simulation budget, checks ambiguity, and may suggest an unmeasured junction. The current v2 core is simulation retrieval and verification, not a calibrated Bayesian posterior.</p></article><article class="card"><h3>What is still missing?</h3><p>This is a synthetic Net1 demonstration with broad sensor coverage. Real deployment needs model calibration, demand changes, partial sensor tests, multiple faults, actual valve locations, and a durable job system. No physical action is automated.</p></article></div>
-      <details class="file-details card"><summary>See all backend modules and their jobs</summary><div class="file-list"><p><code>models.py</code> fault candidate contract and severity grid</p><p><code>hydraulics.py</code> network loading, fault injection, WNTR snapshots and time curves</p><p><code>fingerprints.py</code> offline catalog, shortlist, severity interpolation</p><p><code>scoring.py</code> pressure/flow mismatch and numeric evidence</p><p><code>context.py</code> maintenance, demand and weather records in SQLite</p><p><code>graph.py</code> LangGraph state, loop and stop rule</p><p><code>decisions.py</code> operator-facing recommendations</p><p><code>narrative.py</code> optional LLM phrasing; deterministic fallback</p><p><code>observability.py</code> optional AgentOps spans</p><p><code>main.py</code> API, demo, sessions, SSE and static site</p></div></details>
+      <div class="learning-grid"><article class="card"><h3>Why keep a catalog?</h3><p>Stored signatures cover network fault types, locations, and severities. Building them costs offline runs including baseline. The live search uses topological zones to narrow down candidate pipes across larger networks like Net2 without brute-force searches.</p></article><article class="card"><h3>What does a low mismatch mean?</h3><p>The simulated readings are close to the observed values after pressure and flow have been put on comparable scales. It does not prove the fault. Another cause may fit nearly as well, and unmodelled causes remain possible.</p></article><article class="card"><h3>What does the agent decide?</h3><p>The graph controls the investigation stages, ranks topological zones, estimates severity, uses a simulation budget, checks ambiguity, and may suggest an unmeasured junction. The current v2 core is simulation retrieval and verification, not a calibrated Bayesian posterior.</p></article><article class="card"><h3>What is still missing?</h3><p>This is a synthetic demonstration with broad sensor coverage. Real deployment needs model calibration, demand changes, partial sensor tests, multiple faults, actual valve locations, and a durable job system. No physical action is automated.</p></article></div>
+      <details class="file-details card"><summary>See all backend modules and their jobs</summary><div class="file-list"><p><code>models.py</code> fault candidate contract and severity grid</p><p><code>hydraulics.py</code> network loading, fault injection, WNTR snapshots and time curves</p><p><code>zones.py</code> connected topological graph partition into zones</p><p><code>fingerprints.py</code> offline catalog, shortlist, severity interpolation</p><p><code>scoring.py</code> pressure/flow mismatch and numeric evidence</p><p><code>context.py</code> maintenance, demand and weather records in SQLite</p><p><code>graph.py</code> LangGraph state, loop and stop rule</p><p><code>decisions.py</code> operator-facing recommendations</p><p><code>narrative.py</code> optional LLM phrasing; deterministic fallback</p><p><code>observability.py</code> optional AgentOps spans</p><p><code>main.py</code> API, demo, sessions, SSE and static site</p></div></details>
     </section>
   </main>
-  <footer><div><strong>WaterGuard</strong><p>A synthetic, evidence-backed investigation demo. Human verification is required before field action.</p></div><span>Net1 · WNTR · FastAPI · LangGraph</span></footer>
+  <footer><div><strong>WaterGuard</strong><p>A synthetic, evidence-backed investigation demo. Human verification is required before field action.</p></div><span>Net2 · Net1 · WNTR · FastAPI · LangGraph</span></footer>
   <div id="toast" role="status" aria-live="polite"></div>
 </body>
 </html>
